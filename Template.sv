@@ -890,7 +890,7 @@ assign LED_USER = ioctl_download;
 // jtframe_ra_mirror.v). ARM region table { ra_start, len, mirror_offset }
 // against FinalBurn Neo's d_taitomisc.cpp "All Ram":
 //   { 0x00000, 0xE000, 0x0000 }  main RAM 0x080000-0x08DFFF
-//   { 0x10000, 0x1000, 0xE000 }  RAM 0xE10000-0xE10FFF
+//   { 0x0F000, 0x1000, 0xE000 }  main RAM 0x08F000-0x08FFFF
 //   { 0x2C800, 0x1000, 0xF000 }  shared RAM 0xE01000-0xE01FFF
 // The DDRAM port is shared with the game's own master (audio ROM, save
 // states) through ra_ddr_arb, which only switches at transaction boundaries;

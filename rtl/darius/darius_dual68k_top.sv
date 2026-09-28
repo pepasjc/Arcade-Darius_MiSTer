@@ -857,23 +857,24 @@ ss_ram16_adaptor #(.WIDTHAD(15), .SS_IDX(SS_IDX_MAIN_RAM)) u_ss_main_ram (
 // lane (FinalBurn Neo order, mirror byte k = 68K byte k^1):
 //   qwords 0x0000-0x1BFF (0x0000-0xDFFF): main RAM 0x080000-0x08DFFF
 //                                         (RA 0x00000, len 0xE000)
-//   qwords 0x1C00-0x1DFF (0xE000-0xEFFF): RAM 0xE10000-0xE10FFF
-//                                         (RA 0x10000, len 0x1000)
+//   qwords 0x1C00-0x1DFF (0xE000-0xEFFF): main RAM 0x08F000-0x08FFFF
+//                                         (RA 0x0F000, len 0x1000)
 //   qwords 0x1E00-0x1FFF (0xF000-0xFFFF): shared RAM 0xE01000-0xE01FFF
 //                                         (RA 0x2C800, len 0x1000)
-// Main and 0xE10000 RAM are read through second ports of their own M10Ks.
+// The darius set reads main RAM 0x3FA-0x2C0C and 0xFE30-0xFE33, and shared
+// RAM 0x6E4 (RA 0x2CEE4). Main RAM is read through a second port of its M10K.
 // The shared RAM already uses both of its ports (main and sub CPU), so the
 // first 4 kB of it is shadowed from the writes into it on either port (after
 // the save-state adaptor, so restores are seen): the CPU map puts
 // 0xE01000-0xE01FFF at shared words 0x800-0xFFF. Write strobes are one-clock
 // pulses; a sub write in the same clock as a main write lands one clock later.
-wire [63:0] ra_main_q, ra_e100_q, ra_shared_q;
-reg   [1:0] ra_sel;
-always @(posedge clk)
-	ra_sel <= (ra_rd_addr[12:10] != 3'b111) ? 2'd0 :
-	          (ra_rd_addr[9] == 1'b0)       ? 2'd1 : 2'd2;
-assign ra_rd_q = (ra_sel == 2'd0) ? ra_main_q :
-                 (ra_sel == 2'd1) ? ra_e100_q : ra_shared_q;
+wire [63:0] ra_main_q, ra_shared_q;
+reg         ra_sel_shared;
+always @(posedge clk) ra_sel_shared <= &ra_rd_addr[12:9];
+assign ra_rd_q = ra_sel_shared ? ra_shared_q : ra_main_q;
+// mirror qwords 0x1C00-0x1DFF read main RAM qwords 0x1E00-0x1FFF
+wire [12:0] ra_main_addr = (ra_rd_addr[12:9] == 4'b1110) ? {4'b1111, ra_rd_addr[8:0]}
+                                                         : ra_rd_addr;
 
 wire        ra_sh_main_we  = main_shared_wr & main_shared_addr[11];
 wire        ra_sh_sub_we   = (sshr_we_lo | sshr_we_hi) & sshr_addr[11];
@@ -921,7 +922,7 @@ darius_local_ram #(
 	.wdata(smr_wdata),
 	.rdata(main_ram_rdata),
 	.ra_clk(clk),
-	.ra_addr(ra_rd_addr[12:0]),
+	.ra_addr(ra_main_addr),
 	.ra_q(ra_main_q)
 );
 
@@ -942,8 +943,7 @@ ss_ram16_adaptor #(.WIDTHAD(11), .SS_IDX(SS_IDX_E100)) u_ss_e100 (
 );
 
 darius_local_ram #(
-	.ADDR_WIDTH(11),
-	.RA_PORT(1)
+	.ADDR_WIDTH(11)
 ) u_main_e100_ram (
 	.clk(clk),
 	.rd(main_e100_rd),
@@ -952,9 +952,9 @@ darius_local_ram #(
 	.addr(se1_addr),
 	.wdata(se1_wdata),
 	.rdata(main_e100_rdata),
-	.ra_clk(clk),
-	.ra_addr(ra_rd_addr[8:0]),
-	.ra_q(ra_e100_q)
+	.ra_clk(1'b0),
+	.ra_addr(9'd0),
+	.ra_q()
 );
 
 // --- u_palette_ram: adaptor sulla porta SUB (sub_rd libero) ---
