@@ -215,7 +215,7 @@ wire signed [9:0] osd_fg_yoff  = {{4{status[85]}}, status[85:80]};
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"Darius;SS3E000000:200000;",
+	"RA_Darius;SS3E000000:200000;",
 	"-;",
 	"O[108:105],Savestate Slot,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16;",
 	"R[109],Save state (Alt-F1);",
@@ -499,8 +499,19 @@ wire [15:0] map_yscroll_l0, map_yscroll_l1;
 wire [9:0]  ship_x;
 wire        ship_commit;
 
+// The game's DDRAM master (behind the RetroAchievements arbiter) and the RA
+// mirror read port, see RETROACHIEVEMENTS at the end of the file.
+wire        game_DDRAM_BUSY, game_DDRAM_RD, game_DDRAM_WE;
+wire  [7:0] game_DDRAM_BURSTCNT, game_DDRAM_BE;
+wire [28:0] game_DDRAM_ADDR;
+wire [63:0] game_DDRAM_DIN;
+wire [12:0] ra_rd_addr;
+wire [63:0] ra_rd_q;
+
 darius_dual68k_top game
 (
+	.ra_rd_addr(ra_rd_addr),
+	.ra_rd_q(ra_rd_q),
 	.clk(clk_sys),
 	.reset(reset),
 	.pause(pause),
@@ -568,10 +579,10 @@ darius_dual68k_top game
 	.fg_dl_data(ioctl_dout),
 	// Audio ROM DDR3
 	.audio_ioctl_wait(ioctl_wait_audio),
-	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
-	.DDRAM_ADDR(DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
-	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(DDRAM_RD),
-	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE),
+	.DDRAM_BUSY(game_DDRAM_BUSY), .DDRAM_BURSTCNT(game_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(game_DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(game_DDRAM_RD),
+	.DDRAM_DIN(game_DDRAM_DIN), .DDRAM_BE(game_DDRAM_BE), .DDRAM_WE(game_DDRAM_WE),
 	// Savestate
 	.ss_save(ss_save_t), .ss_load(ss_load_t), .ss_slot(ss_slot),
 	.paused_real(paused_safe), .ss_pause_out(ss_pause),
@@ -868,5 +879,71 @@ assign LED_USER = ioctl_download;
 // JTAG Debug Probes (readable via quartus_stp / System Console)
 // ============================================================
 // JTAG boot trace removed to save M10K for 64KB work RAM
+
+// ============================================================
+// RETROACHIEVEMENTS RAM MIRROR
+// ============================================================
+// Once per frame, at the start of VBlank, 64 kB read from the 68000 RAMs
+// (rtl/darius/darius_dual68k_top.sv, "RetroAchievements RAM mirror") is
+// copied to DDR3 at 0x3D000000 in the "RACH" layout the RA build of
+// Main_MiSTer reads (rtl/ra/ra_mirror_gather.v, from jotego's JTFRAME
+// jtframe_ra_mirror.v). ARM region table { ra_start, len, mirror_offset }
+// against FinalBurn Neo's d_taitomisc.cpp "All Ram":
+//   { 0x00000, 0xE000, 0x0000 }  main RAM 0x080000-0x08DFFF
+//   { 0x10000, 0x1000, 0xE000 }  RAM 0xE10000-0xE10FFF
+//   { 0x2C800, 0x1000, 0xF000 }  shared RAM 0xE01000-0xE01FFF
+// The DDRAM port is shared with the game's own master (audio ROM, save
+// states) through ra_ddr_arb, which only switches at transaction boundaries;
+// the mirror releases it after every 256-byte burst.
+reg  [63:0] ra_rd_q_r;
+always @(posedge clk_sys) ra_rd_q_r <= ra_rd_q;
+
+wire        ra_ddr_we, ra_ddr_busy;
+wire  [7:0] ra_ddr_burstcnt, ra_ddr_be;
+wire [28:0] ra_ddr_addr;
+wire [63:0] ra_ddr_din;
+
+ra_mirror_gather #(.DW(64), .RD_LAT(2)) ra_mirror (
+	.rst          (~pll_locked),
+	.clk          (clk_sys),
+	.vblank       (VBlank),
+	.hold         (reset),
+	.rd_en        (),
+	.rd_addr      (ra_rd_addr),
+	.rd_data      (ra_rd_q_r),
+	.ddr_we       (ra_ddr_we),
+	.ddr_busy     (ra_ddr_busy),
+	.ddr_burstcnt (ra_ddr_burstcnt),
+	.ddr_addr     (ra_ddr_addr),
+	.ddr_be       (ra_ddr_be),
+	.ddr_din      (ra_ddr_din),
+	.active       ()
+);
+
+ra_ddr_arb ra_ddr_arb (
+	.clk            (clk_sys),
+	.rst            (~pll_locked),
+	.ddr_busy       (DDRAM_BUSY),
+	.ddr_dout_ready (DDRAM_DOUT_READY),
+	.c0_rd          (game_DDRAM_RD),
+	.c0_we          (game_DDRAM_WE),
+	.c0_addr        (game_DDRAM_ADDR),
+	.c0_be          (game_DDRAM_BE),
+	.c0_din         (game_DDRAM_DIN),
+	.c0_burstcnt    (game_DDRAM_BURSTCNT),
+	.c0_busy        (game_DDRAM_BUSY),
+	.c1_we          (ra_ddr_we),
+	.c1_addr        (ra_ddr_addr),
+	.c1_be          (ra_ddr_be),
+	.c1_din         (ra_ddr_din),
+	.c1_burstcnt    (ra_ddr_burstcnt),
+	.c1_busy        (ra_ddr_busy),
+	.ddr_rd         (DDRAM_RD),
+	.ddr_we         (DDRAM_WE),
+	.ddr_addr       (DDRAM_ADDR),
+	.ddr_be         (DDRAM_BE),
+	.ddr_din        (DDRAM_DIN),
+	.ddr_burstcnt   (DDRAM_BURSTCNT)
+);
 
 endmodule

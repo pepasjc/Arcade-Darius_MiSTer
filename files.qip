@@ -13,6 +13,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_maincpu_map.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_subcpu_map.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_shared_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_local_ram.sv
+# RetroAchievements RAM mirror (from jotego's JTFRAME, GPL-3.0-or-later)
+set_global_assignment -name VERILOG_FILE rtl/ra/ra_mirror_gather.v
+set_global_assignment -name VERILOG_FILE rtl/ra/ra_ddr_arb.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ra/ra_ram16_rd64.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_panel_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/darius_fg_renderer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/darius/tile_rom_arbiter.sv

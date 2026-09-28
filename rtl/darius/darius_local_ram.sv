@@ -25,7 +25,10 @@
 
 module darius_local_ram
 #(
-	parameter integer ADDR_WIDTH = 11
+	parameter integer ADDR_WIDTH = 11,
+	// RetroAchievements RAM mirror: 1 = second, read-only 64-bit port
+	// (ra_addr/ra_q, see rtl/ra/ra_ram16_rd64.sv), same M10K bits
+	parameter integer RA_PORT    = 0
 )
 (
 	input  wire                  clk,
@@ -34,8 +37,31 @@ module darius_local_ram
 	input  wire [1:0]            be,    // byte enable: be[1]=write HI, be[0]=write LO
 	input  wire [ADDR_WIDTH-1:0] addr,
 	input  wire [15:0]           wdata,
-	output wire [15:0]           rdata
+	output wire [15:0]           rdata,
+
+	// RetroAchievements mirror read port (RA_PORT=1): qword n = words
+	// 4n..4n+3, word 4n in bits 15:0, registered address, data 1 clk later
+	input  wire                  ra_clk,
+	input  wire [ADDR_WIDTH-3:0] ra_addr,
+	output wire [63:0]           ra_q
 );
+
+generate
+if (RA_PORT) begin : ra_ram
+	// Same RAM as below, as an explicit dual-port M10K whose second port is
+	// the RetroAchievements mirror's (contents power up as zero, as below).
+	ra_ram16_rd64 #(.WIDTHAD(ADDR_WIDTH)) u_ram (
+		.clock    (clk),
+		.we       ({wr & be[1], wr & be[0]}),
+		.address  (addr),
+		.data     (wdata),
+		.q        (rdata),
+		.clock_b  (ra_clk),
+		.address_b(ra_addr),
+		.q_b      (ra_q)
+	);
+end else begin : plain_ram
+assign ra_q = 64'd0;
 
 // Split into two 8-bit RAMs for proper M10K byte-enable inference
 (* ramstyle = "M10K" *) reg [7:0] ram_hi [0:(1 << ADDR_WIDTH)-1];
@@ -63,5 +89,7 @@ always @(posedge clk) begin
 end
 
 assign rdata = {rdata_hi, rdata_lo};
+end
+endgenerate
 
 endmodule

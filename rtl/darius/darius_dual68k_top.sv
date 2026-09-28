@@ -145,7 +145,11 @@ module darius_dual68k_top
 	input  wire [3:0]  mix_sel_msm,
 	// Audio output
 	output wire signed [15:0] audio_l,
-	output wire signed [15:0] audio_r
+	output wire signed [15:0] audio_r,
+	// RetroAchievements RAM mirror read port (clk): qword address in the
+	// 64 kB mirror, data one clock later. See "RetroAchievements" below.
+	input  wire [12:0] ra_rd_addr,
+	output wire [63:0] ra_rd_q
 );
 
 // ── Forward declarations (needed by ModelSim) ────────────────────────────
@@ -842,8 +846,72 @@ ss_ram16_adaptor #(.WIDTHAD(15), .SS_IDX(SS_IDX_MAIN_RAM)) u_ss_main_ram (
 	.ssbus(ssb[SS_IDX_MAIN_RAM])
 );
 
+// =====================================================================
+// RetroAchievements RAM mirror
+// =====================================================================
+// RA sets for Darius use FinalBurn Neo's d_taitomisc.cpp "All Ram":
+// Taito68KRam1 (0x18000: 0x080000-0x08FFFF at 0, 0xE10000-0xE10FFF at
+// 0x10000), Z80 RAMs at 0x18000/0x19000, palette 0x19800, sprite RAM
+// 0x1D800, shared RAM 0x2C800 (0xE01000-), video RAM 0x3C800, sub RAM
+// 0xBC800. 64 kB of it is mirrored, each 68K word as-is in a little-endian
+// lane (FinalBurn Neo order, mirror byte k = 68K byte k^1):
+//   qwords 0x0000-0x1BFF (0x0000-0xDFFF): main RAM 0x080000-0x08DFFF
+//                                         (RA 0x00000, len 0xE000)
+//   qwords 0x1C00-0x1DFF (0xE000-0xEFFF): RAM 0xE10000-0xE10FFF
+//                                         (RA 0x10000, len 0x1000)
+//   qwords 0x1E00-0x1FFF (0xF000-0xFFFF): shared RAM 0xE01000-0xE01FFF
+//                                         (RA 0x2C800, len 0x1000)
+// Main and 0xE10000 RAM are read through second ports of their own M10Ks.
+// The shared RAM already uses both of its ports (main and sub CPU), so the
+// first 4 kB of it is shadowed from the writes into it on either port (after
+// the save-state adaptor, so restores are seen): the CPU map puts
+// 0xE01000-0xE01FFF at shared words 0x800-0xFFF. Write strobes are one-clock
+// pulses; a sub write in the same clock as a main write lands one clock later.
+wire [63:0] ra_main_q, ra_e100_q, ra_shared_q;
+reg   [1:0] ra_sel;
+always @(posedge clk)
+	ra_sel <= (ra_rd_addr[12:10] != 3'b111) ? 2'd0 :
+	          (ra_rd_addr[9] == 1'b0)       ? 2'd1 : 2'd2;
+assign ra_rd_q = (ra_sel == 2'd0) ? ra_main_q :
+                 (ra_sel == 2'd1) ? ra_e100_q : ra_shared_q;
+
+wire        ra_sh_main_we  = main_shared_wr & main_shared_addr[11];
+wire        ra_sh_sub_we   = (sshr_we_lo | sshr_we_hi) & sshr_addr[11];
+reg         ra_sh_pend     = 1'b0;
+reg  [10:0] ra_sh_pend_addr;
+reg  [15:0] ra_sh_pend_data;
+reg   [1:0] ra_sh_pend_be;
+always @(posedge clk) begin
+	if (ra_sh_sub_we && (ra_sh_main_we || ra_sh_pend)) begin
+		ra_sh_pend      <= 1'b1;
+		ra_sh_pend_addr <= sshr_addr[10:0];
+		ra_sh_pend_data <= sshr_wdata;
+		ra_sh_pend_be   <= {sshr_we_hi, sshr_we_lo};
+	end else if (!ra_sh_main_we)
+		ra_sh_pend <= 1'b0;
+end
+wire  [1:0] ra_sh_we   = ra_sh_main_we ? main_bus_be :
+                         ra_sh_pend    ? ra_sh_pend_be :
+                         ra_sh_sub_we  ? {sshr_we_hi, sshr_we_lo} : 2'b00;
+wire [10:0] ra_sh_addr = ra_sh_main_we ? main_shared_addr[10:0] :
+                         ra_sh_pend    ? ra_sh_pend_addr : sshr_addr[10:0];
+wire [15:0] ra_sh_data = ra_sh_main_we ? main_shared_wdata :
+                         ra_sh_pend    ? ra_sh_pend_data : sshr_wdata;
+
+ra_ram16_rd64 #(.WIDTHAD(11)) u_ra_shared_shadow (
+	.clock    (clk),
+	.we       (ra_sh_we),
+	.address  (ra_sh_addr),
+	.data     (ra_sh_data),
+	.q        (),
+	.clock_b  (clk),
+	.address_b(ra_rd_addr[8:0]),
+	.q_b      (ra_shared_q)
+);
+
 darius_local_ram #(
-	.ADDR_WIDTH(15)
+	.ADDR_WIDTH(15),
+	.RA_PORT(1)
 ) u_main_ram (
 	.clk(clk),
 	.rd(main_ram_rd),
@@ -851,7 +919,10 @@ darius_local_ram #(
 	.be({smr_we_hi, smr_we_lo}),
 	.addr(smr_addr),
 	.wdata(smr_wdata),
-	.rdata(main_ram_rdata)
+	.rdata(main_ram_rdata),
+	.ra_clk(clk),
+	.ra_addr(ra_rd_addr[12:0]),
+	.ra_q(ra_main_q)
 );
 
 // --- u_main_e100_ram: adaptor sull'unica porta ---
@@ -871,7 +942,8 @@ ss_ram16_adaptor #(.WIDTHAD(11), .SS_IDX(SS_IDX_E100)) u_ss_e100 (
 );
 
 darius_local_ram #(
-	.ADDR_WIDTH(11)
+	.ADDR_WIDTH(11),
+	.RA_PORT(1)
 ) u_main_e100_ram (
 	.clk(clk),
 	.rd(main_e100_rd),
@@ -879,7 +951,10 @@ darius_local_ram #(
 	.be({se1_we_hi, se1_we_lo}),
 	.addr(se1_addr),
 	.wdata(se1_wdata),
-	.rdata(main_e100_rdata)
+	.rdata(main_e100_rdata),
+	.ra_clk(clk),
+	.ra_addr(ra_rd_addr[8:0]),
+	.ra_q(ra_e100_q)
 );
 
 // --- u_palette_ram: adaptor sulla porta SUB (sub_rd libero) ---
@@ -943,7 +1018,10 @@ darius_local_ram #(
 	.be({ssr_we_hi, ssr_we_lo}),
 	.addr(ssr_addr),
 	.wdata(ssr_wdata),
-	.rdata(sub_ram_rdata)
+	.rdata(sub_ram_rdata),
+	.ra_clk(1'b0),
+	.ra_addr(13'd0),
+	.ra_q()
 );
 
 // =====================================================================
